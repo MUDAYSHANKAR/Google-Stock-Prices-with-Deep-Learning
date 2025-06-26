@@ -1,0 +1,197 @@
+# ==============================================================================
+# 0. SETUP AND INSTALLATIONS
+# ==============================================================================
+print("--- Installing required libraries ---")
+# yfinance for downloading stock data
+!pip install yfinance tensorflow -q
+
+
+# ==============================================================================
+# 1. IMPORT LIBRARIES
+# ==============================================================================
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+import yfinance as yf
+from sklearn.preprocessing import MinMaxScaler
+from tensorflow.keras.models import Sequential
+from tensorflow.keras.layers import LSTM, Dense, Dropout
+import math
+from sklearn.metrics import mean_squared_error
+
+print("Libraries imported successfully.")
+
+
+# ==============================================================================
+# 2. DATA ACQUISITION
+# ==============================================================================
+print("\n--- Downloading Google's Historical Stock Data ---")
+# Define the ticker symbol and the date range
+ticker = 'GOOGL'
+start_date = '2015-01-01'
+end_date = pd.to_datetime('today').strftime('%Y-%m-%d')
+
+# Download the data
+df = yf.download(ticker, start=start_date, end=end_date)
+print(f"Downloaded {len(df)} data points.")
+print("\nSample of the data:")
+print(df.head())
+
+# Plot the closing price history
+plt.figure(figsize=(14, 7))
+plt.plot(df['Close'])
+plt.title(f'{ticker} Close Price History')
+plt.xlabel('Date')
+plt.ylabel('Close Price USD ($)')
+plt.grid(True)
+plt.show()
+
+
+# ==============================================================================
+# 3. DATA PREPROCESSING FOR LSTM
+# ==============================================================================
+print("\n--- Preprocessing Data for LSTM Model ---")
+
+# Create a new dataframe with only the 'Close' column
+data = df.filter(['Close'])
+# Convert the dataframe to a numpy array
+dataset = data.values
+# Get the number of rows to train the model on (80% of the data)
+training_data_len = math.ceil(len(dataset) * .8)
+
+# --- Scale the data ---
+# Scaling is crucial for neural networks to perform well
+scaler = MinMaxScaler(feature_range=(0, 1))
+scaled_data = scaler.fit_transform(dataset)
+
+# --- Create the training data set ---
+# Create the scaled training data set
+train_data = scaled_data[0:training_data_len, :]
+# Split the data into x_train and y_train data sets
+X_train = []
+y_train = []
+
+# We use the past 60 days of data to predict the 61st day
+time_step = 60
+for i in range(time_step, len(train_data)):
+    X_train.append(train_data[i-time_step:i, 0])
+    y_train.append(train_data[i, 0])
+
+# Convert the x_train and y_train to numpy arrays
+X_train, y_train = np.array(X_train), np.array(y_train)
+
+# Reshape the data for the LSTM model (samples, timesteps, features)
+X_train = np.reshape(X_train, (X_train.shape[0], X_train.shape[1], 1))
+print(f"Shape of training data: {X_train.shape}")
+
+
+# ==============================================================================
+# 4. BUILD THE LSTM MODEL
+# ==============================================================================
+print("\n--- Building the LSTM Model ---")
+
+model = Sequential([
+    # First LSTM layer with Dropout regularization
+    LSTM(units=50, return_sequences=True, input_shape=(X_train.shape[1], 1)),
+    Dropout(0.2),
+    # Second LSTM layer
+    LSTM(units=50, return_sequences=False),
+    Dropout(0.2),
+    # Dense layer
+    Dense(units=25),
+    # Output layer
+    Dense(units=1)
+])
+
+# Compile the model
+model.compile(optimizer='adam', loss='mean_squared_error')
+model.summary()
+
+
+# ==============================================================================
+# 5. TRAIN THE MODEL
+# ==============================================================================
+print("\n--- Training the Model ---")
+# Training the model. This may take a few minutes.
+history = model.fit(X_train, y_train, batch_size=32, epochs=25)
+
+
+# ==============================================================================
+# 6. EVALUATION AND VISUALIZATION
+# ==============================================================================
+print("\n--- Evaluating the Model on Test Data ---")
+
+# --- Create the testing data set ---
+# Create a new array containing scaled values from index after training data length to end
+test_data = scaled_data[training_data_len - time_step:, :]
+# Create the data sets X_test and y_test
+X_test = []
+y_test = dataset[training_data_len:, :]
+for i in range(time_step, len(test_data)):
+    X_test.append(test_data[i-time_step:i, 0])
+
+# Convert the data to a numpy array
+X_test = np.array(X_test)
+
+# Reshape the data
+X_test = np.reshape(X_test, (X_test.shape[0], X_test.shape[1], 1))
+print(f"Shape of test data: {X_test.shape}")
+
+# --- Get the models predicted price values ---
+predictions = model.predict(X_test)
+# Inverse transform the predictions to get actual dollar values
+predictions = scaler.inverse_transform(predictions)
+
+# --- Calculate the Root Mean Squared Error (RMSE) ---
+rmse = np.sqrt(np.mean(((predictions - y_test) ** 2)))
+print(f"\nRoot Mean Squared Error (RMSE): {rmse:.2f}")
+
+# --- Plot the data ---
+train = data[:training_data_len]
+valid = data[training_data_len:]
+valid['Predictions'] = predictions
+
+plt.figure(figsize=(16, 8))
+plt.title('Model Prediction vs Actuals')
+plt.xlabel('Date')
+plt.ylabel('Close Price USD ($)')
+plt.plot(train['Close'])
+plt.plot(valid[['Close', 'Predictions']])
+plt.legend(['Train', 'Actual', 'Predictions'], loc='lower right')
+plt.grid(True)
+plt.show()
+
+# Show the actual and predicted prices
+print("\nSample of Actual vs. Predicted Prices:")
+print(valid.tail(10))
+
+
+# ==============================================================================
+# 7. PREDICTING THE NEXT DAY
+# ==============================================================================
+print("\n--- Predicting the Next Business Day's Stock Price ---")
+
+# Get the last 60 day closing price values and convert the dataframe to an array
+last_60_days = data[-time_step:].values
+
+# Scale the data to be values between 0 and 1
+last_60_days_scaled = scaler.transform(last_60_days)
+
+# Create an empty list
+X_pred = []
+# Append the past 60 days
+X_pred.append(last_60_days_scaled)
+
+# Convert the X_pred data set to a numpy array
+X_pred = np.array(X_pred)
+
+# Reshape the data
+X_pred = np.reshape(X_pred, (X_pred.shape[0], X_pred.shape[1], 1))
+
+# Get the predicted scaled price
+pred_price = model.predict(X_pred)
+# Undo the scaling
+pred_price = scaler.inverse_transform(pred_price)
+
+next_day = (pd.to_datetime(end_date) + pd.DateOffset(days=1)).strftime('%Y-%m-%d')
+print(f"Predicted close price for {ticker} on {next_day}: ${pred_price[0][0]:.2f}")
